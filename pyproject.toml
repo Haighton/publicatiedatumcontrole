@@ -20,7 +20,8 @@ dependencies = [
   "lxml",
   "matplotlib",
   "Pillow",
-  "rapidfuzz"
+  "rapidfuzz",
+  "pyyaml",
 ]
 
 [project.scripts]

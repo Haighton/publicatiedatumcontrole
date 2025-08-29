@@ -1,28 +1,52 @@
-def compare_dates(df):
+import logging
+import pandas as pd
+from typing import List
+
+
+def compare_dates(df: pd.DataFrame, logger: logging.Logger | None = None) -> pd.DataFrame:
     """
-    Vergelijk alto_date met mets_date en bereken afstandsscore.
+    Compare 'alto_date' with 'mets_date' and compute a distance score.
+
+    Args:
+        df (pd.DataFrame): Must contain 'alto_date' and 'mets_date' as yyyy-mm-dd.
+        logger (logging.Logger, optional): Logger for reporting.
+
+    Returns:
+        pd.DataFrame: With added 'distance_score' column.
     """
-    df = df.copy()  # voorkomt SettingWithCopyWarning
+    try:
+        # Split dates into components
+        a_date: List[List[str]] = df["alto_date"].astype(str).str.split("-").tolist()
+        m_date: List[List[str]] = df["mets_date"].astype(str).str.split("-").tolist()
 
-    a_date = df['alto_date'].str.split('-')
-    m_date = df['mets_date'].str.split('-')
+        def strip_leading_zeros(dates: List[List[str]]) -> List[List[str]]:
+            cleaned = []
+            for parts in dates:
+                entry = [p.lstrip("0") if isinstance(p, str)
+                         else str(p) for p in parts]
+                cleaned.append(entry)
+            return cleaned
 
-    # Helper: verwijder leading zeros
-    def lead_zero(dates):
-        return [[adf.lstrip('0') for adf in ad] for ad in dates]
+        a_date = strip_leading_zeros(a_date)
+        m_date = strip_leading_zeros(m_date)
 
-    a_date = lead_zero(a_date)
-    m_date = lead_zero(m_date)
+        dis_score: List[int] = []
+        for ad, md in zip(a_date, m_date):
+            try:
+                year_diff = abs(int(ad[0]) - int(md[0]))
+                month_diff = abs(int(ad[1]) - int(md[1]))
+                day_diff = abs(int(ad[2]) - int(md[2]))
+                dis_score.append(year_diff + month_diff + day_diff)
+            except (ValueError, IndexError) as e:
+                if logger:
+                    logger.warning(f"Invalid date comparison (alto={ad}, mets={md}): {e}")
+                dis_score.append(9999)  # sentinel for invalid
 
-    dis_score = []
-    for i in range(len(m_date)):
-        try:
-            year_diff = abs(int(a_date[i][0]) - int(m_date[i][0]))
-            month_diff = abs(int(a_date[i][1]) - int(m_date[i][1]))
-            day_diff = abs(int(a_date[i][2]) - int(m_date[i][2]))
-            dis_score.append(year_diff + month_diff + day_diff)
-        except Exception:
-            dis_score.append(9999)  # fallback bij parsing errors
+        df["distance_score"] = dis_score
 
-    df["distance_score"] = dis_score
+    except Exception as e:
+        if logger:
+            logger.error(f"Error comparing dates: {e}")
+        df["distance_score"] = 9999
+
     return df

@@ -1,78 +1,78 @@
-from lxml import etree
 import os
+import logging
+from typing import List, Dict, Any
+from lxml import etree
 
 
-def get_alto_data(alto_file, logger=None):
-    """
-    Extract //String/@CONTENT attributes uit een ALTO-bestand.
-    """
+def get_alto_data(alto_file: str, logger=None) -> list:
+    """Extract //String/@CONTENT attributes from an ALTO XML file."""
     alto_file_content = []
-    try:
-        with open(alto_file, "rb") as alto:
-            context = etree.iterparse(alto, events=("start", "end"))
-            for event, elem in context:
-                if event == "end" and etree.QName(elem.tag).localname == "String":
+    skipped = 0
+    with open(alto_file, "rb") as alto:
+        context = etree.iterparse(alto, events=("end",))
+        for event, elem in context:
+            if etree.QName(elem.tag).localname == "String":
+                try:
                     alto_file_content.append([
                         elem.get("CONTENT"),
                         (int(elem.get("VPOS")), int(elem.get("HPOS")))
                     ])
+                except (TypeError, ValueError):
+                    skipped += 1
             elem.clear()
-        return alto_file_content
-    except Exception as e:
-        if logger:
-            logger.error(f"Fout bij verwerken ALTO {alto_file}: {e}")
-        return []
+    if skipped and logger:
+        logger.debug(f"Skipped {skipped} invalid String elements in {alto_file}")
+    return alto_file_content
 
 
-def extract_mets_data(mets_files, logger=None):
+def extract_mets_data(mets_files: List[str], logger: logging.Logger | None = None) -> Dict[str, List[str]]:
     """
-    Extract publication date, title, edition uit METS bestanden.
+    Extract publication date, title, and edition data from a list of METS files.
+
+    Args:
+        mets_files (list[str]): List of METS XML file paths.
+        logger (logging.Logger, optional): Logger for reporting.
+
+    Returns:
+        dict: Dictionary with keys 'filename', 'mets_date', 'mets_title', 'mets_edition'.
     """
-    filenames, mets_dates, mets_titles, mets_editions = [], [], [], []
+    dict_mets_dates: Dict[str, List[str]] = {"filename": [], "mets_date": [], "mets_title": [], "mets_edition": []}
+
     for count, mets_file in enumerate(mets_files, start=1):
         try:
-            if logger:
-                logger.info(f"Extracting data from METS: {os.path.basename(mets_file)} ({count}/{len(mets_files)})")
-            np_titles, np_dates, np_editions = [], [], []
             with open(mets_file, "rb") as mets:
                 context = etree.iterparse(mets, events=("start", "end"))
+                np_titles: List[str] = []
+                np_dates: List[str] = []
+                np_editions: List[str] = []
+
                 for _, elem in context:
                     if elem.tag == "{http://www.loc.gov/mods/v3}mods":
                         for elem_child in elem:
-                            if elem_child.tag == "{http://www.loc.gov/mods/v3}relatedItem":
-                                for elem_child2 in elem_child:
-                                    if elem_child2.tag.endswith("titleInfo"):
-                                        for elem_child3 in elem_child2:
-                                            if elem_child3.tag.endswith("title") and elem_child3.text:
-                                                np_titles.append(
-                                                    elem_child3.text.strip())
-                                    elif elem_child2.tag.endswith("part"):
-                                        for elem_child3 in elem_child2:
-                                            if elem_child3.tag.endswith("date") and elem_child3.text:
-                                                np_dates.append(
-                                                    elem_child3.text.strip())
-                                    elif elem_child2.tag.endswith("originInfo"):
-                                        for elem_child3 in elem_child2:
-                                            if elem_child3.tag.endswith("edition") and elem_child3.text:
-                                                np_editions.append(
-                                                    elem_child3.text.strip())
-                        elem.clear()
-            filenames.append(os.path.basename(
-                mets_file).replace("_mets.xml", ""))
-            mets_titles.append(np_titles[0] if np_titles else None)
-            mets_dates.append(np_dates[0] if np_dates else None)
-            mets_editions.append(np_editions[0] if np_editions else None)
+                            if elem_child.tag.endswith("titleInfo"):
+                                for c in elem_child:
+                                    if c.tag.endswith("title") and c.text:
+                                        np_titles.append(c.text)
+                            elif elem_child.tag.endswith("part"):
+                                for c in elem_child:
+                                    if c.tag.endswith("date") and c.text:
+                                        np_dates.append(c.text)
+                            elif elem_child.tag.endswith("originInfo"):
+                                for c in elem_child:
+                                    if c.tag.endswith("edition") and c.text:
+                                        np_editions.append(c.text)
+
+                dict_mets_dates["filename"].append(
+                    os.path.basename(mets_file).strip("_mets.xml"))
+                dict_mets_dates["mets_date"].append(
+                    np_dates[0] if np_dates else "")
+                dict_mets_dates["mets_title"].append(
+                    np_titles[0] if np_titles else "")
+                dict_mets_dates["mets_edition"].append(
+                    np_editions[0] if np_editions else "")
+
         except Exception as e:
             if logger:
-                logger.error(f"Fout in METS {mets_file}: {e}")
-            filenames.append(os.path.basename(mets_file))
-            mets_titles.append(None)
-            mets_dates.append(None)
-            mets_editions.append(None)
+                logger.error(f"Could not extract data from METS file {mets_file}: {e}")
 
-    return {
-        "filename": filenames,
-        "mets_date": mets_dates,
-        "mets_title": mets_titles,
-        "mets_edition": mets_editions,
-    }
+    return dict_mets_dates

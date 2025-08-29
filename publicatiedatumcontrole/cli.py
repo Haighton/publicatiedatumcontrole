@@ -1,16 +1,41 @@
 import argparse
 import os
-import re
-import numpy as np
-import pandas as pd
-from rapidfuzz import fuzz
+import sys
+import yaml
+import csv
+import time
+from concurrent.futures import ProcessPoolExecutor, as_completed
+
+from tqdm import tqdm
 
 from .utils import setup_logging
-from .getfiles import get_files
-from .extract import get_alto_data, extract_mets_data
-from .scores import vpos_score, kde_gaussian
-from .compare import compare_dates
-from .report import plot_fig, generate_html_log
+from .runner import process_batch
+
+
+def load_config(config_path: str = "config.yaml") -> dict:
+    """Load YAML config file if present."""
+    if os.path.exists(config_path):
+        with open(config_path, "r", encoding="utf-8") as f:
+            return yaml.safe_load(f) or {}
+    return {}
+
+
+def determine_workers(num_batches: int) -> int:
+    """
+    Kies automatisch het aantal workers op basis van batch count en CPU cores.
+    - Kleine batches: gebruik alle cores (min 2).
+    - Middelgrote: gebruik min(batches, cores-1).
+    - Grote hoeveelheid: cap op 8.
+    """
+    cores = os.cpu_count() or 2
+
+    if num_batches <= 2:
+        return max(2, cores)
+
+    if num_batches <= cores:
+        return max(2, min(num_batches, cores - 1))
+
+    return min(8, cores)
 
 
 def main():
@@ -19,30 +44,41 @@ def main():
     )
     parser.add_argument("batches", nargs="+",
                         help="Een of meerdere batchmappen")
-    parser.add_argument(
-        "--log", default="logs/publicatiedatumcontrole.log",
-        help="Logbestand (append)"
-    )
-    parser.add_argument(
-        "--verbose", action="store_true",
-        help="Toon extra debug-informatie"
-    )
-    parser.add_argument(
-        "--threshold",
-        type=float,
-        default=0.8,
-        help="Score-drempel voor selectie van kandidaten (default: 0.8)"
-    )
-    parser.add_argument(
-        "-o", "--output",
-        default="html-reports",
-        help="Hoofdmap voor rapporten (default: ./html-reports)"
-    )
+    parser.add_argument("--log", default=None, help="Logbestand (append)")
+    parser.add_argument("--verbose", action="store_true",
+                        help="Toon extra debug-informatie")
+    parser.add_argument("--threshold", type=float,
+                        default=None, help="Score-drempel (default 0.8)")
+    parser.add_argument("-o", "--output", default=None,
+                        help="Hoofdmap voor rapporten")
+    parser.add_argument("--xml", action="store_true",
+                        help="Genereer ook XML-rapporten naast HTML")
+    parser.add_argument("--date-tolerance", type=int, default=None,
+                        help="Maximaal toegestaan verschil (dag+maand+jaar) tussen ALTO en METS (default 2)")
 
     args = parser.parse_args()
 
-    logger = setup_logging(args.log, args.verbose)
-    logger.info("Start publicatiedatumcontrole")
+    # ------------------ CONFIG ------------------
+    config = load_config("config.yaml")
+    logfile = args.log or config.get("log", "logs/publicatiedatumcontrole.log")
+    verbose = args.verbose or config.get("verbose", False)
+    threshold = args.threshold or config.get("threshold", 0.8)
+    output_dir = args.output or config.get("output", "html-reports")
+    xml_output = args.xml or config.get("xml", False)
+    date_tolerance = args.date_tolerance or config.get("date_tolerance", 2)
+
+    # schrijf terug naar args zodat process_batch deze kan gebruiken
+    args.log = logfile
+    args.verbose = verbose
+    args.threshold = threshold
+    args.output = output_dir
+    args.xml = xml_output
+    args.date_tolerance = date_tolerance
+
+    logger = setup_logging(logfile, verbose)
+    logger.info("Start publicatiedatumcontrole (parallel mode)")
+    logger.info(f"Centrale log: {logfile}")
+    logger.info("Elke batch schrijft daarnaast naar eigen logfile in dezelfde map.")
 
     months = {
         "januari": "01", "februari": "02", "maart": "03", "april": "04",
@@ -50,116 +86,50 @@ def main():
         "september": "09", "oktober": "10", "november": "11", "december": "12"
     }
 
-    for batch_count, path_batch in enumerate(args.batches, start=1):
-        batch_id = os.path.basename(path_batch)
-        logger.info(f"=== Start batch {batch_count}/{len(args.batches)}: {batch_id} ===")
+    num_batches = len(args.batches)
+    max_workers = determine_workers(num_batches)
+    logger.info(f"Gebruik {max_workers} parallelle workers voor {num_batches} batches")
 
-        # ------------------ GET FILES ------------------
-        alto_files, mets_files = get_files(path_batch, logger=logger)
-        logger.info(f"Gevonden {len(alto_files)} ALTO en {len(mets_files)} METS bestanden")
+    results = []
+    with ProcessPoolExecutor(max_workers=max_workers) as executor:
+        futures = {
+            executor.submit(process_batch, path, args, months, logfile, verbose): path
+            for path in args.batches
+        }
+        for fut in tqdm(as_completed(futures), total=len(futures), desc="Processing batches"):
+            try:
+                results.append(fut.result())
+            except Exception as e:
+                logger.error(f"Batch {futures[fut]} failed: {e}")
 
-        # ------------------ ALTO DATES ------------------
-        filenames, alto_dates, content_x, content_y = [], [], [], []
-        for idx, alto_file in enumerate(alto_files, start=1):
-            logger.debug(f"Processing {os.path.basename(alto_file)} ({idx}/{len(alto_files)})")
+    total_alto = sum(r[1] for r in results)
+    total_mets = sum(r[2] for r in results)
+    total_candidates = sum(r[3] for r in results)
+    total_errors = sum(r[4] for r in results)
 
-            alto_content = get_alto_data(alto_file, logger=logger)
-            for word_count, alto_word in enumerate(alto_content, start=1):
-                if not alto_word or not alto_word[0]:
-                    continue
+    logger.info("=== Run summary ===")
+    logger.info(f"Processed {len(results)} batches")
+    logger.info(f"Total ALTO files: {total_alto}, METS files: {total_mets}")
+    logger.info(f"Total candidates (above threshold): {total_candidates}")
+    logger.info(f"Total potential errors: {total_errors}")
+    logger.info("Alle batches verwerkt ✅")
 
-                # negeer problematische woorden
-                if alto_word[0].lower() in ["maar"]:
-                    continue
+    # ------------------ CSV SAMENVATTING ------------------
+    reports_dir = os.path.abspath("reports")
+    os.makedirs(reports_dir, exist_ok=True)
+    csv_name = os.path.join(reports_dir, f"run_summary_{time.strftime('%Y%m%d_%H%M')}.csv")
 
-                for month in months.keys():
-                    fuzz_score = fuzz.ratio(alto_word[0].lower(), month)
-                    if fuzz_score > 80:
-                        try:
-                            prev_content = re.sub(
-                                r"[^\w\s]", "", alto_content[word_count - 2][0])
-                            next_content = re.sub(
-                                r"[^\w\s]", "", alto_content[word_count][0])
+    with open(csv_name, "w", newline="", encoding="utf-8") as csvfile:
+        writer = csv.writer(csvfile)
+        writer.writerow(["batch_id", "alto_files", "mets_files", "candidates", "errors"])
+        for r in results:
+            writer.writerow(r)  # (batch_id, alto, mets, candidates, errors)
+        writer.writerow([])
+        writer.writerow(["TOTAL", total_alto, total_mets, total_candidates, total_errors])
 
-                            if (prev_content.isdigit() and len(prev_content) < 3 and
-                                    next_content.isdigit() and len(next_content) < 5):
+    logger.info(f"Samenvattings-CSV opgeslagen: {csv_name}")
 
-                                filenames.append(os.path.basename(
-                                    alto_file).rstrip("_alto_00001.xml"))
-                                alto_dates.append(f"{next_content}-{months[month]}-{prev_content.zfill(2)}")
-                                content_x.append(alto_word[1][0])
-                                content_y.append(alto_word[1][1])
-                        except (ValueError, IndexError):
-                            continue
-
-        df = pd.DataFrame({
-            "filename": filenames,
-            "alto_date": alto_dates,
-            "VPOS": content_x,
-            "HPOS": content_y,
-        })
-
-        # ------------------ METS DATES ------------------
-        dict_mets_dates = extract_mets_data(mets_files, logger=logger)
-        df_mets = pd.DataFrame(dict_mets_dates)
-        df_mets["title_edition"] = df_mets["mets_title"] + \
-            "_" + df_mets["mets_edition"]
-        newspaper_titles = df_mets["title_edition"].unique().tolist()
-
-        for current_title in newspaper_titles:
-            logger.info(f"Analyse voor krant: {current_title}")
-
-            df_current = pd.merge(df, df_mets, on="filename")
-            df_current = df_current[df_current["title_edition"]
-                                    == current_title]
-
-            if len(df_current) == 0:
-                logger.warning(f"Geen data gevonden voor {current_title}")
-                continue
-
-            # ------------------ SCORES ------------------
-            df_current = kde_gaussian(df_current)
-            df_current = vpos_score(df_current)
-            col = df_current.loc[:, "kde_score":"vpos_score"]
-            df_current["score"] = np.round(col.mean(axis=1), 2)
-
-            df_filtered = df_current[df_current["score"] >= args.threshold]
-            logger.info(
-                f"Pagina's met mogelijke datum: {len(df_filtered)} "
-                f"(threshold={args.threshold})"
-            )
-
-            alto_fnames = [os.path.basename(p).rstrip(
-                "_00001_alto.xml") for p in alto_files]
-            no_pd = set(alto_fnames) - set(df_filtered["filename"])
-            if no_pd:
-                perc = np.round(len(no_pd) / len(alto_files) * 100.0, 1)
-                logger.warning(f"Geen publicatiedatum gevonden voor {len(no_pd)} bestanden ({perc}%)")
-
-            # ------------------ COMPARE ------------------
-            df_compared = compare_dates(df_filtered)
-            df_errors = df_compared[(df_compared["distance_score"] > 0) &
-                                    (df_compared["distance_score"] < 5)]
-
-            if len(df_errors) > 0:
-                log_folder = os.path.join(args.output, batch_id)
-                os.makedirs(os.path.join(log_folder, "images"), exist_ok=True)
-
-                plot_fig(df_errors, path_batch, current_title,
-                         log_folder, df_current, logger=logger)
-                generate_html_log(
-                    df_errors,
-                    path_batch,
-                    current_title,
-                    log_folder,
-                    logger=logger,
-                    threshold=args.threshold
-                )
-
-                logger.error(f"{len(df_errors)} mogelijke fouten gevonden in {current_title}")
-            else:
-                logger.info(f"Geen fouten gevonden voor {current_title}")
-
-            logger.debug(f"df_compared sample:\n{df_compared[['filename','alto_date','mets_date','score','distance_score']].head(20)}")
-
-    logger.info("Alle batches verwerkt.")
+    if total_errors > 0:
+        sys.exit(1)
+    else:
+        sys.exit(0)

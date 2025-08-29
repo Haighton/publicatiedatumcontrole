@@ -1,0 +1,17 @@
+# Default configuration for publicatiedatumcontrole
+# CLI arguments always override these values.
+
+# Minimum score for candidate dates to be considered
+threshold: 0.8
+
+# Default output folder for reports
+output: "publicatiedatumcontrole-reports"
+
+# Logfile (will append logs)
+log: "logs/publicatiedatumcontrole.log"
+
+# Verbose logging (debug-level)
+verbose: false
+
+# Generate XML reports in addition to HTML
+xml: true

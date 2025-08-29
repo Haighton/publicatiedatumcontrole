@@ -26,9 +26,11 @@ Desktop.ini
 # Reports / temp
 *.html
 *.log
+*.csv
 
 # Dev
 logs/
 __old/
 testdata/
 html_logs/
+reports/

@@ -1,3 +1,4 @@
+
 # publicatiedatumcontrole
 
 Check whether the publication date printed on the front page of a digitized Dutch newspaper (ALTO) matches the official publication date recorded in its metadata (METS/MODS).
@@ -58,7 +59,10 @@ python -m publicatiedatumcontrole [OPTIONS] <batch1> <batch2> ...
 |--------|-------|---------|-------------|
 | `--verbose` | | off | Enable verbose logging (debug-level output). |
 | `--threshold <float>` | | `0.8` | Score threshold for selecting candidate publication dates. Candidates with a score below this value are ignored. |
+| `--date-tolerance <int>` | | `2` | Maximum allowed difference (sum of year + month + day offsets) between ALTO and METS dates. |
 | `--output <path>` | `-o` | `html-reports` | Directory where reports will be written. A subdirectory per batch will be created. |
+| `--xml` | | off | Also generate XML reports (machine-readable output, one per batch). |
+| `--log <path>` | | `logs/publicatiedatumcontrole.log` | Central log file (append mode). Each batch also gets its own logfile in the same directory. |
 | `--help` | `-h` | | Show help message and exit. |
 
 ### Examples
@@ -75,10 +79,16 @@ Run multiple batches with verbose logging:
 python -m publicatiedatumcontrole /data/batch1 /data/batch2 --verbose
 ```
 
-Lower threshold (e.g. 0.7) and custom output folder:
+Lower threshold (e.g. 0.7), increase tolerance, and custom output folder:
 
 ```bash
-python -m publicatiedatumcontrole /data/batch1 --threshold 0.7 -o ./reports
+python -m publicatiedatumcontrole /data/batch1 --threshold 0.7 --date-tolerance 3 -o ./reports
+```
+
+Also generate XML output:
+
+```bash
+python -m publicatiedatumcontrole /data/batch1 --xml
 ```
 
 ---
@@ -88,11 +98,43 @@ python -m publicatiedatumcontrole /data/batch1 --threshold 0.7 -o ./reports
 The tool generates:
 
 - **Per-batch HTML reports**, containing:
-	- A table of candidate discrepancies between ALTO and METS/MODS dates.
-	- Cropped snippets of the detected date from the page image.
-	- A density plot showing the distribution of detected dates.
-- Reports are stored in a configurable output directory (default: `html-reports/`).
+    - A table of candidate discrepancies between ALTO and METS/MODS dates.
+    - Cropped snippets of the detected date from the page image.
+    - A density plot showing the distribution of detected dates.
+- **Optional XML reports** (`--xml`), machine-readable summaries of the detected errors.  
+- **Logs**:  
+    - A central logfile (`logs/publicatiedatumcontrole.log`)  
+    - Per-batch logfiles (`logs/<batch_id>.log`) with detailed information  
+- **CSV summary**:  
+    - At the end of each run, a summary CSV is written to `reports/run_summary_<timestamp>.csv`.  
+    - Contains one line per batch (ALTO count, METS count, candidate count, errors) and totals.  
 
 ---
+
+## Configuration
+
+In addition to CLI options, defaults can be set in a `config.yaml` file at the project root:
+
+```yaml
+log: logs/publicatiedatumcontrole.log
+output: html-reports
+threshold: 0.8
+date_tolerance: 2
+xml: false
+verbose: false
+```
+
+CLI options always override values in the config file.
+
+---
+
+## Performance
+
+- Batches are processed **in parallel** using multiple CPU cores.  
+- The number of workers is determined automatically based on the number of batches and available CPU cores.  
+- This ensures efficient use of resources without overloading the machine.  
+
+---
+
 
 _Developed by T.Haighton for KB Digitalisering (updated 08-2025)_
