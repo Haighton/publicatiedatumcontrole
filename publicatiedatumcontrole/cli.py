@@ -3,7 +3,7 @@ import os
 import re
 import numpy as np
 import pandas as pd
-from rapidfuzz import fuzz  # sneller alternatief voor fuzzywuzzy
+from rapidfuzz import fuzz
 
 from .utils import setup_logging
 from .getfiles import get_files
@@ -162,4 +162,4 @@ def main():
 
             logger.debug(f"df_compared sample:\n{df_compared[['filename','alto_date','mets_date','score','distance_score']].head(20)}")
 
-    logger.info("Alle batches verwerkt ✅")
+    logger.info("Alle batches verwerkt.")
