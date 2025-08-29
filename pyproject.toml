@@ -1,0 +1,27 @@
+[build-system]
+requires = ["setuptools>=61.0", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "publicatiedatumcontrole"
+version = "0.1.0"
+description = "Controleer publicatiedata in gedigitaliseerde kranten (ALTO/METS/MODS)."
+authors = [
+  { name = "Thomas Haighton", email = "thomas.haighton@kb.nl" }
+]
+readme = "README.md"
+license = { text = "MIT" }
+requires-python = ">=3.9"
+
+dependencies = [
+  "numpy",
+  "pandas",
+  "scipy",
+  "lxml",
+  "matplotlib",
+  "Pillow",
+  "rapidfuzz"
+]
+
+[project.scripts]
+publicatiedatumcontrole = "publicatiedatumcontrole.cli:main"
